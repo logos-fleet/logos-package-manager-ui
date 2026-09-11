@@ -21,7 +21,8 @@ Item {
     signal categorySelected(int index)
     signal typeSelected(int index)
 
-    // Exposed for the ui-tests categories-scroll test 
+    // Exposed for the ui-tests: both sections share this one clipped
+    // Flickable, so reaching an entry can mean driving contentY first.
     readonly property alias scrollArea: scrollArea
     readonly property bool overflowing: scrollArea.contentHeight > scrollArea.height
 
@@ -66,6 +67,10 @@ Item {
                 currentIndex: root.currentIndex
 
                 delegate: SidebarNavItem {
+                    // Test handle. Both sections are SidebarNavItems and a
+                    // category label can collide with a catalog type, so only
+                    // the section-plus-index pair identifies an entry.
+                    objectName: "pmui.CategorySidebar.category." + index
                     width: ListView.view.width
                     text: modelData
                     highlighted: ListView.isCurrentItem
@@ -100,6 +105,7 @@ Item {
                 currentIndex: root.currentTypeIndex
 
                 delegate: SidebarNavItem {
+                    objectName: "pmui.CategorySidebar.type." + index
                     width: ListView.view.width
                     text: modelData
                     highlighted: ListView.isCurrentItem
