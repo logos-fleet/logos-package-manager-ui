@@ -612,6 +612,57 @@ test("categories sidebar: scrollable when contents overflow", async (app) => {
   }
 });
 
+// Geometry of a QQuickItem in window coordinates, read through the
+// inspector's `evaluate`. mapToItem(null, ...) is the scene origin, which
+// is what cmdClick synthesises its mouse position from.
+async function sceneGeometry(app, objectId) {
+  const res = await app.inspector.send("evaluate", {
+    objectId,
+    expression: `JSON.stringify({ y: mapToItem(null, 0, 0).y, h: height })`,
+  });
+  if (res.error) throw new Error(`evaluate failed: ${res.error}`);
+  return JSON.parse(res.result);
+}
+
+// Categories and Types share one Flickable. A catalog with a long
+// Categories list pushes the Types entries below the clipped viewport,
+// and a click synthesised at an off-viewport scene position lands on
+// nothing — the selection silently does not move. Scroll the target
+// entry into view the way a user would before clicking it.
+async function scrollSidebarEntryIntoView(app, objectId) {
+  const scroll = await app.findByProperty("objectName", "pmui.CategorySidebar.scrollArea");
+  if (!scroll.matches || scroll.matches.length === 0) {
+    throw new Error("CategorySidebar.scrollArea not found");
+  }
+  const scrollId = scroll.matches[0].id;
+
+  const view = await sceneGeometry(app, scrollId);
+  const item = await sceneGeometry(app, objectId);
+  const contentY = await propertyOf(app, scrollId, "contentY");
+  const contentHeight = await propertyOf(app, scrollId, "contentHeight");
+
+  const maxContentY = Math.max(0, contentHeight - view.h);
+  // Centre the entry in the viewport, clamped to the scrollable range.
+  const target = Math.min(
+    maxContentY,
+    Math.max(0, contentY + (item.y - view.y) - (view.h - item.h) / 2));
+  if (Math.abs(target - contentY) < 1) return;
+
+  await app.inspector.send("setProperty", {
+    objectId: scrollId, property: "contentY", value: target,
+  });
+  await app.waitFor(
+    async () => {
+      const now = await propertyOf(app, scrollId, "contentY");
+      if (Math.abs(now - target) > 1) {
+        throw new Error(`contentY=${now} (expected ~${target})`);
+      }
+    },
+    { timeout: 2000, interval: 100,
+      description: "sidebar to scroll the entry into view" }
+  );
+}
+
 test("row click after type filter: details.type matches the filtered type", async (app) => {
   await waitForPmuiLoaded(app);
   await app.waitFor(
@@ -628,37 +679,78 @@ test("row click after type filter: details.type matches the filtered type", asyn
   if (!Array.isArray(types) || types.length < 2) return;
   const chosenType = types[1];
 
-  // The sidebar's Types entries are labelled by the type string itself.
-  await app.click(chosenType, { exact: true });
+  // Address the Types entry by objectName: both sidebar sections are
+  // SidebarNavItems and a category label can collide with a catalog type,
+  // so the text alone is not a unique handle.
+  const entry = await app.findByProperty("objectName", "pmui.CategorySidebar.type.1");
+  if (!entry.matches || entry.matches.length === 0) {
+    throw new Error('Types entry "pmui.CategorySidebar.type.1" not found in the sidebar');
+  }
+  const entryId = entry.matches[0].id;
+  await scrollSidebarEntryIntoView(app, entryId);
+
+  const clicked = await app.inspector.send("click", { objectId: entryId });
+  if (clicked.error) throw new Error(`click on the Types entry failed: ${clicked.error}`);
+
+  // The type filter narrows the catalog for every test that runs after
+  // this one, so hand the app back unfiltered whatever happens here.
+  try {
+    await app.waitFor(
+      async () => {
+        const idx = await storeProperty(app, "selectedTypeIndex");
+        if (idx !== 1) throw new Error(`selectedTypeIndex=${idx} (expected 1)`);
+      },
+      { timeout: 5000, interval: 250, description: "type filter to apply" }
+    );
+
+    const label = await firstVisibleRowLabel(app);
+    if (!label) return;   // no rows in this type — skip cleanly
+
+    await app.click(label, { exact: true });
+    await app.waitFor(
+      async () => {
+        const details = await storeProperty(app, "selectedPackageDetails");
+        if (!details || !details.name) {
+          throw new Error(`no details after click: ${JSON.stringify(details)}`);
+        }
+        if (details.type !== chosenType) {
+          throw new Error(
+            `details.type="${details.type}" (expected "${chosenType}") — ` +
+            `clicked row belonged to a different type, backend acted on the ` +
+            `raw model row instead of the filtered proxy row`);
+        }
+      },
+      { timeout: 5000, interval: 250,
+        description: "details to match the filtered type" }
+    );
+  } finally {
+    await clearTypeFilter(app);
+  }
+});
+
+// Put the sidebar back the way the rest of the suite expects it: the
+// "All" type selected and the Flickable scrolled to the top.
+async function clearTypeFilter(app) {
+  const store = await app.findByProperty("objectName", "pmui.BackendStore");
+  if (store.matches && store.matches.length > 0) {
+    await app.inspector.send("evaluate", {
+      objectId: store.matches[0].id, expression: "selectType(0)",
+    });
+  }
+  const scroll = await app.findByProperty("objectName", "pmui.CategorySidebar.scrollArea");
+  if (scroll.matches && scroll.matches.length > 0) {
+    await app.inspector.send("setProperty", {
+      objectId: scroll.matches[0].id, property: "contentY", value: 0,
+    });
+  }
   await app.waitFor(
     async () => {
       const idx = await storeProperty(app, "selectedTypeIndex");
-      if (idx !== 1) throw new Error(`selectedTypeIndex=${idx} (expected 1)`);
+      if (idx !== 0) throw new Error(`selectedTypeIndex=${idx} (expected 0)`);
     },
-    { timeout: 5000, interval: 250, description: "type filter to apply" }
+    { timeout: 5000, interval: 250, description: "type filter to clear" }
   );
-
-  const label = await firstVisibleRowLabel(app);
-  if (!label) return;   // no rows in this type — skip cleanly
-
-  await app.click(label, { exact: true });
-  await app.waitFor(
-    async () => {
-      const details = await storeProperty(app, "selectedPackageDetails");
-      if (!details || !details.name) {
-        throw new Error(`no details after click: ${JSON.stringify(details)}`);
-      }
-      if (details.type !== chosenType) {
-        throw new Error(
-          `details.type="${details.type}" (expected "${chosenType}") — ` +
-          `clicked row belonged to a different type, backend acted on the ` +
-          `raw model row instead of the filtered proxy row`);
-      }
-    },
-    { timeout: 5000, interval: 250,
-      description: "details to match the filtered type" }
-  );
-});
+}
 
 // ─── "Local" synthetic-repo tests ──────────────────────────────────
 // PackageManagerBackend synthesises rows for installed packages the

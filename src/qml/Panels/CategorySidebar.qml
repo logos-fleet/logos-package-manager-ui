@@ -21,7 +21,11 @@ Item {
     signal categorySelected(int index)
     signal typeSelected(int index)
 
-    // Exposed for the ui-tests categories-scroll test 
+    // Exposed for the ui-tests categories-scroll test. The tests also
+    // drive scrollArea.contentY directly to bring a Types entry into
+    // view: both sections live in this one Flickable, so a long
+    // Categories list pushes the Types entries below the clipped
+    // viewport, where a synthesised click lands on nothing.
     readonly property alias scrollArea: scrollArea
     readonly property bool overflowing: scrollArea.contentHeight > scrollArea.height
 
@@ -66,6 +70,11 @@ Item {
                 currentIndex: root.currentIndex
 
                 delegate: SidebarNavItem {
+                    // Addressable by the ui-tests: both sections are
+                    // SidebarNavItems and a category can share a catalog
+                    // type's label, so the index is the only unambiguous
+                    // handle on a specific entry.
+                    objectName: "pmui.CategorySidebar.category." + index
                     width: ListView.view.width
                     text: modelData
                     highlighted: ListView.isCurrentItem
@@ -100,6 +109,7 @@ Item {
                 currentIndex: root.currentTypeIndex
 
                 delegate: SidebarNavItem {
+                    objectName: "pmui.CategorySidebar.type." + index
                     width: ListView.view.width
                     text: modelData
                     highlighted: ListView.isCurrentItem
